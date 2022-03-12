@@ -3,6 +3,7 @@ package raft
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.824/labrpc"
 )
@@ -50,6 +51,9 @@ type Raft struct {
 
 	nextIndex  []int
 	matchIndex []int
+
+	// heartBeatTimeout - after this timeout is reached Follower needs to switch to Candidate and start election
+	heartBeatTimeout time.Duration
 }
 
 func (rf *Raft) GetState() (int, bool) {
@@ -142,7 +146,6 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
@@ -156,6 +159,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.heartBeatTimeout = time.Millisecond * 150
 
 	// Your initialization code here (2A, 2B, 2C).
 
