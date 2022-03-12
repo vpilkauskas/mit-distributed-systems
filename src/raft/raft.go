@@ -41,7 +41,8 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// serverState - at peer initiation state will always default to follower
-	serverState state
+	serverState   state
+	lastHeartbeat time.Time
 
 	// in other lab assignments these values will be moved to persister
 	currentTerm int
@@ -156,7 +157,17 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) handleFollower() {
-	log.Println("Executing follower flow")
+	rf.mu.Lock()
+	lastHB := rf.lastHeartbeat
+	rf.mu.Unlock()
+
+	timeSinceLastHB := time.Since(lastHB)
+
+	if timeSinceLastHB > rf.heartBeatTimeout {
+		rf.setState(candidate)
+		return
+	}
+	time.Sleep(rf.heartBeatTimeout - timeSinceLastHB)
 }
 
 func (rf *Raft) handleCandidate() {
