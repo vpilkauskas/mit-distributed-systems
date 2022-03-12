@@ -30,6 +30,15 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// in other lab assignments these values will be moved to persister
+	currentTerm int
+	votedFor    *int
+
+	commitIndex int
+	lastApplied int
+
+	nextIndex  []int
+	matchIndex []int
 }
 
 func (rf *Raft) GetState() (int, bool) {
