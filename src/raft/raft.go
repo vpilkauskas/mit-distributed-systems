@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -143,8 +144,40 @@ func (rf *Raft) killed() bool {
 // heartbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
+		switch rf.state() {
+		case follower:
+			rf.handleFollower()
+		case candidate:
+			rf.handleCandidate()
+		case leader:
+			rf.handleLeader()
+		}
 	}
+}
+
+func (rf *Raft) handleFollower() {
+	log.Println("Executing follower flow")
+}
+
+func (rf *Raft) handleCandidate() {
+	log.Println("Executing candidate flow")
+}
+
+func (rf *Raft) handleLeader() {
+	log.Println("Executing leader flow")
+}
+
+func (rf *Raft) state() state {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.serverState
+}
+
+func (rf *Raft) setState(s state) {
+	rf.mu.Lock()
+	rf.serverState = s
+	rf.mu.Unlock()
 }
 
 func Make(peers []*labrpc.ClientEnd, me int,
