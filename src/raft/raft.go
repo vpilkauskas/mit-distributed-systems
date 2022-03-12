@@ -19,6 +19,14 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type state byte
+
+const (
+	follower  state = 0x00
+	candidate state = 0x01
+	leader    state = 0x02
+)
+
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -29,6 +37,9 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+
+	// serverState - at peer initiation state will always default to follower
+	serverState state
 
 	// in other lab assignments these values will be moved to persister
 	currentTerm int
