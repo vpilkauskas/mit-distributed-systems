@@ -123,6 +123,32 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) AppendRequest(args *AppendRequestArgs, reply *AppendRequestReply) {
+	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	currentTerm := rf.currentTerm
+	rf.mu.Unlock()
+
+	if args.Term < currentTerm {
+		reply.Term = currentTerm
+		reply.Success = false
+		return
+	}
+	// TODO check if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
+
+	rf.mu.Lock()
+	rf.lastHeartbeat = time.Now()
+	rf.mu.Unlock()
+	if len(args.Entries) == 0 {
+		reply.Success = true
+		return
+	}
+}
+
+func (rf *Raft) sendAppendRequest(server int, args *AppendRequestArgs, reply *AppendRequestReply) bool {
+	return rf.peers[server].Call("Raft.AppendRequest", args, reply)
+}
+
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
