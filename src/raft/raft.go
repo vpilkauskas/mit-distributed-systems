@@ -277,6 +277,53 @@ func (rf *Raft) handleCandidate() {
 
 func (rf *Raft) handleLeader() {
 	log.Println("Executing leader flow")
+	heartbeatTicker := time.NewTicker(time.Millisecond * 100)
+	defer heartbeatTicker.Stop()
+
+	term, success := rf.sendHeartbeat()
+	if !success {
+		rf.setState(follower)
+		rf.setTerm(term)
+		return
+	}
+
+	for range heartbeatTicker.C {
+		term, success := rf.sendHeartbeat()
+		if success {
+			rf.setState(follower)
+			rf.setTerm(term)
+			return
+		}
+	}
+}
+
+func (rf *Raft) sendHeartbeat() (term int, success bool) {
+	request := &AppendRequestArgs{
+		Term:     rf.term(),
+		LeaderID: rf.me,
+	}
+
+	appendReplyC := make(chan *AppendRequestReply)
+	for peerIndex := range rf.peers {
+		go func(index int) {
+			reply := &AppendRequestReply{}
+			rf.sendAppendRequest(index, request, reply)
+			appendReplyC <- reply
+		}(peerIndex)
+	}
+
+	for i := 0; i < len(rf.peers)-1; i++ {
+		reply := <-appendReplyC
+		if reply.Success {
+			continue
+		}
+
+		if reply.Term > request.Term {
+			rf.setTerm(reply.Term)
+			return reply.Term, false
+		}
+	}
+	return 0, true
 }
 
 func (rf *Raft) incrTerm() int {
@@ -285,6 +332,19 @@ func (rf *Raft) incrTerm() int {
 	rf.currentTerm++
 
 	return rf.currentTerm
+}
+
+func (rf *Raft) term() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.currentTerm
+}
+
+func (rf *Raft) setTerm(term int) {
+	rf.mu.Lock()
+	rf.currentTerm = term
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) state() state {
