@@ -116,6 +116,23 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
+
+	if rf.votedFor != nil && *rf.votedFor != args.CandidateID && args.Term == rf.currentTerm {
+		return
+	}
+	rf.votedFor = &args.CandidateID
+	rf.currentTerm = args.Term
+	rf.lastHeartbeat = time.Now()
+
+	reply.VoteGranted = true
+	return
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
