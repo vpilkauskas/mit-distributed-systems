@@ -2,6 +2,8 @@ package raft
 
 import (
 	"log"
+	"math"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,6 +58,11 @@ type Raft struct {
 
 	// heartBeatTimeout - after this timeout is reached Follower needs to switch to Candidate and start election
 	heartBeatTimeout time.Duration
+
+	candidateVoteTimeoutMinMS int
+	candidateVoteTimeoutMaxMS int
+
+	requiredVotes int
 }
 
 func (rf *Raft) GetState() (int, bool) {
@@ -215,10 +222,69 @@ func (rf *Raft) handleFollower() {
 
 func (rf *Raft) handleCandidate() {
 	log.Println("Executing candidate flow")
+	electionTimeout := rand.Intn(rf.candidateVoteTimeoutMaxMS-rf.candidateVoteTimeoutMinMS) + rf.candidateVoteTimeoutMinMS
+	electionTimeoutTimer := time.NewTimer(time.Duration(electionTimeout) * time.Millisecond)
+	defer electionTimeoutTimer.Stop()
+
+	term := rf.incrTerm()
+
+	request := &RequestVoteArgs{
+		Term:        term,
+		CandidateID: rf.me,
+	}
+
+	replyC := make(chan *RequestVoteReply)
+	for peerIndex := range rf.peers {
+		if peerIndex == rf.me {
+			continue
+		}
+
+		go func(pIndex int) {
+			reply := &RequestVoteReply{}
+			rf.sendRequestVote(pIndex, request, reply)
+
+			select {
+			case <-electionTimeoutTimer.C:
+				return
+			case replyC <- reply:
+			}
+
+		}(peerIndex)
+	}
+
+	success := 0
+	for i := 0; i < len(rf.peers)-1; i++ {
+		select {
+		case <-electionTimeoutTimer.C:
+			return
+		case reply := <-replyC:
+			if reply.VoteGranted {
+				success++
+				if success < rf.requiredVotes {
+					continue
+				}
+				rf.setState(leader)
+				return
+			}
+			if reply.Term > rf.currentTerm {
+				rf.setState(follower)
+				return
+			}
+		}
+	}
+
 }
 
 func (rf *Raft) handleLeader() {
 	log.Println("Executing leader flow")
+}
+
+func (rf *Raft) incrTerm() int {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.currentTerm++
+
+	return rf.currentTerm
 }
 
 func (rf *Raft) state() state {
@@ -237,10 +303,13 @@ func (rf *Raft) setState(s state) {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
-		peers:            peers,
-		persister:        persister,
-		me:               me,
-		heartBeatTimeout: time.Millisecond * 150,
+		peers:                     peers,
+		persister:                 persister,
+		me:                        me,
+		heartBeatTimeout:          time.Millisecond * 150,
+		candidateVoteTimeoutMinMS: 150,
+		candidateVoteTimeoutMaxMS: 300,
+		requiredVotes:             int(math.Ceil(float64(len(peers)-1) / 2)),
 	}
 
 	// initialize from state persisted before a crash
