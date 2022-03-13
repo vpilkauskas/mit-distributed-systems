@@ -40,5 +40,5 @@ type AppendRequestReply struct {
 	// Scenarios:
 	// - If term < current peer term -> return false
 	// - If log doesn't contain an entry at PrevLogIndex whose term matches PrevLogTerm -> return false
-	Success int
+	Success bool
 }
