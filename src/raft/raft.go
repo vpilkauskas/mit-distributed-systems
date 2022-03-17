@@ -1,9 +1,8 @@
 package raft
 
 import (
-	"log"
+	"fmt"
 	"math"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,8 +46,9 @@ type Raft struct {
 	lastHeartbeat time.Time
 
 	// in other lab assignments these values will be moved to persister
-	currentTerm int
-	votedFor    *int
+	currentTerm  int
+	votedFor     int
+	votedForTerm int
 
 	commitIndex int
 	lastApplied int
@@ -56,8 +56,9 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
-	// heartBeatTimeout - after this timeout is reached Follower needs to switch to Candidate and start election
-	heartBeatTimeout time.Duration
+	// electionTimeout - after this timeout is reached Follower needs to switch to Candidate and start election
+	electionTimeout time.Duration
+	hbTimeout       time.Duration
 
 	candidateVoteTimeoutMinMS int
 	candidateVoteTimeoutMaxMS int
@@ -68,7 +69,6 @@ type Raft struct {
 func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
 	return rf.currentTerm, rf.serverState == leader
 }
 
@@ -128,17 +128,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+	if rf.votedForTerm < args.Term {
+		rf.votedForTerm = args.Term
+		rf.votedFor = args.CandidateID
+		rf.lastHeartbeat = time.Now()
+		rf.serverState = follower
+
+		reply.Term = args.Term
+		reply.VoteGranted = true
 		return
 	}
 
-	if rf.votedFor != nil && *rf.votedFor != args.CandidateID && args.Term == rf.currentTerm {
-		return
-	}
-	rf.votedFor = &args.CandidateID
-	rf.currentTerm = args.Term
-	rf.lastHeartbeat = time.Now()
-
-	reply.VoteGranted = true
+	reply.Term = args.Term
+	reply.VoteGranted = false
 	return
 }
 
@@ -150,20 +155,23 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) AppendRequest(args *AppendRequestArgs, reply *AppendRequestReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	currentTerm := rf.currentTerm
-	rf.mu.Unlock()
+	defer rf.mu.Unlock()
 
-	if args.Term < currentTerm {
-		reply.Term = currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
 		reply.Success = false
 		return
 	}
 	// TODO check if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
 
-	rf.mu.Lock()
-	rf.lastHeartbeat = time.Now()
-	rf.mu.Unlock()
 	if len(args.Entries) == 0 {
+		if rf.serverState != follower {
+			rf.serverState = follower
+			fmt.Println(rf.me, "Becoming a follower")
+		}
+		rf.currentTerm = args.Term
+		rf.lastHeartbeat = time.Now()
+
 		reply.Success = true
 		return
 	}
@@ -206,126 +214,6 @@ func (rf *Raft) ticker() {
 	}
 }
 
-func (rf *Raft) handleFollower() {
-	rf.mu.Lock()
-	lastHB := rf.lastHeartbeat
-	rf.mu.Unlock()
-
-	timeSinceLastHB := time.Since(lastHB)
-
-	if timeSinceLastHB > rf.heartBeatTimeout {
-		rf.setState(candidate)
-		return
-	}
-	time.Sleep(rf.heartBeatTimeout - timeSinceLastHB)
-}
-
-func (rf *Raft) handleCandidate() {
-	log.Println("Executing candidate flow")
-	electionTimeout := rand.Intn(rf.candidateVoteTimeoutMaxMS-rf.candidateVoteTimeoutMinMS) + rf.candidateVoteTimeoutMinMS
-	electionTimeoutTimer := time.NewTimer(time.Duration(electionTimeout) * time.Millisecond)
-	defer electionTimeoutTimer.Stop()
-
-	term := rf.incrTerm()
-
-	request := &RequestVoteArgs{
-		Term:        term,
-		CandidateID: rf.me,
-	}
-
-	replyC := make(chan *RequestVoteReply)
-	for peerIndex := range rf.peers {
-		if peerIndex == rf.me {
-			continue
-		}
-
-		go func(pIndex int) {
-			reply := &RequestVoteReply{}
-			rf.sendRequestVote(pIndex, request, reply)
-
-			select {
-			case <-electionTimeoutTimer.C:
-				return
-			case replyC <- reply:
-			}
-
-		}(peerIndex)
-	}
-
-	success := 0
-	for i := 0; i < len(rf.peers)-1; i++ {
-		select {
-		case <-electionTimeoutTimer.C:
-			return
-		case reply := <-replyC:
-			if reply.VoteGranted {
-				success++
-				if success < rf.requiredVotes {
-					continue
-				}
-				rf.setState(leader)
-				return
-			}
-			if reply.Term > rf.currentTerm {
-				rf.setState(follower)
-				return
-			}
-		}
-	}
-
-}
-
-func (rf *Raft) handleLeader() {
-	log.Println("Executing leader flow")
-	heartbeatTicker := time.NewTicker(time.Millisecond * 100)
-	defer heartbeatTicker.Stop()
-
-	term, success := rf.sendHeartbeat()
-	if !success {
-		rf.setState(follower)
-		rf.setTerm(term)
-		return
-	}
-
-	for range heartbeatTicker.C {
-		term, success := rf.sendHeartbeat()
-		if success {
-			rf.setState(follower)
-			rf.setTerm(term)
-			return
-		}
-	}
-}
-
-func (rf *Raft) sendHeartbeat() (term int, success bool) {
-	request := &AppendRequestArgs{
-		Term:     rf.term(),
-		LeaderID: rf.me,
-	}
-
-	appendReplyC := make(chan *AppendRequestReply)
-	for peerIndex := range rf.peers {
-		go func(index int) {
-			reply := &AppendRequestReply{}
-			rf.sendAppendRequest(index, request, reply)
-			appendReplyC <- reply
-		}(peerIndex)
-	}
-
-	for i := 0; i < len(rf.peers)-1; i++ {
-		reply := <-appendReplyC
-		if reply.Success {
-			continue
-		}
-
-		if reply.Term > request.Term {
-			rf.setTerm(reply.Term)
-			return reply.Term, false
-		}
-	}
-	return 0, true
-}
-
 func (rf *Raft) incrTerm() int {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -354,22 +242,19 @@ func (rf *Raft) state() state {
 	return rf.serverState
 }
 
-func (rf *Raft) setState(s state) {
-	rf.mu.Lock()
-	rf.serverState = s
-	rf.mu.Unlock()
-}
-
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	hbInterval := time.Second / time.Duration(10/(len(peers)-1))
+
 	rf := &Raft{
 		peers:                     peers,
 		persister:                 persister,
 		me:                        me,
-		heartBeatTimeout:          time.Millisecond * 150,
-		candidateVoteTimeoutMinMS: 150,
-		candidateVoteTimeoutMaxMS: 300,
-		requiredVotes:             int(math.Ceil(float64(len(peers)-1) / 2)),
+		electionTimeout:           hbInterval + time.Millisecond*100,
+		hbTimeout:                 hbInterval,
+		candidateVoteTimeoutMinMS: int(hbInterval.Milliseconds()),
+		candidateVoteTimeoutMaxMS: int(hbInterval + time.Millisecond*100),
+		requiredVotes:             int(math.Floor(float64(len(peers)) / 2)),
 	}
 
 	// initialize from state persisted before a crash
